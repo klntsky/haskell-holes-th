@@ -8,7 +8,7 @@ author:              klntsky
 maintainer:          klntsky@gmail.com
 category:            Language
 build-type:          Simple
-extra-source-files:  README.md
+extra-source-files:  README.md, Test.hs
 cabal-version:       >=1.10
 library
   exposed-modules:     Language.Haskell.Holes
