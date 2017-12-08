@@ -10,6 +10,10 @@ category:            Language
 build-type:          Simple
 extra-source-files:  README.md, Test.hs
 cabal-version:       >=1.10
+source-repository head
+  type: git
+  location: git://github.com/8084/haskell-holes-th.git
+homepage:            https://github.com/8084/haskell-holes-th
 library
   exposed-modules:     Language.Haskell.Holes
   other-extensions:    TemplateHaskell, FlexibleInstances
