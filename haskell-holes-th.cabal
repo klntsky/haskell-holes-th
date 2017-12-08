@@ -1,7 +1,7 @@
 name:                haskell-holes-th
 version:             0.0.0.1
-synopsis:            TIP solver for simply typed lambda calculus to automatically infer the code from type definitions using TemplateHaskell
-description:         TIP solver for simply typed lambda calculus to automatically infer the code from type definitions using TemplateHaskell
+synopsis:            Infer haskell code by given type.
+description:         TIP solver for simply typed lambda calculus to automatically infer the code from type definitions using TemplateHaskell.
 license:             MIT
 license-file:        LICENSE
 author:              klntsky
