@@ -25,7 +25,7 @@ import Control.Monad (liftM2, (>>=), return, fail, mapM)
 import Prelude (Eq, Show,
                 Maybe (Just, Nothing), Bool, Char, String,
                 Double, Float, Int, Integer, Word,
-                show, ($), (.), putStrLn, (==), minBound, not, id, maybe)
+                show, ($), (.), putStrLn, (==), minBound, not, id, maybe, (<$>))
 
 
 -- | Data type for type definitions.
@@ -146,17 +146,17 @@ holeWith contextLike qexp = do
               ++ "definition here> |])'"
 
 
--- | Extract type defintion - both as a 'TypeDef' and as a 'Type' with `forall` quantifiers.
--- Also return the name of a hole.
+-- | Extract type defintion - both as a 'TypeDef' and as a 'Type' with `forall`
+-- quantifiers. Also return the name of a hole.
 extractTypeDef :: Exp -> Maybe (TypeDef, Name, Type)
 extractTypeDef (SigE (VarE n) tp@(ForallT _ _ t)) =
-  getTypeDef t >>= return . (, n, tp)
+  (, n, tp) <$> getTypeDef t
 extractTypeDef (SigE (UnboundVarE n) tp@(ForallT _ _ t)) =
-  getTypeDef t >>= return . (, n, tp)
+  (, n, tp) <$> getTypeDef t
 extractTypeDef (SigE (VarE n) t) =
-  getTypeDef t >>= return . (, n, t)
+  (, n, t) <$> getTypeDef t
 extractTypeDef (SigE (UnboundVarE n) t) =
-  getTypeDef t >>= return . (, n, t)
+  (, n, t) <$> getTypeDef t
 extractTypeDef _ = Nothing
 
 
@@ -177,25 +177,26 @@ toExp (Var n) = return $ VarE n
 toExp (App a b) =
   liftM2 AppE (toExp a) (toExp b)
 toExp (Lam a b) =
-  toExp b >>= return . LamE [VarP a]
+  LamE [VarP a] <$> toExp b
 toExp (Internal qexp) = qexp
 
 
 printTerm :: Term -> Q String
 printTerm (Var n) = return $ pprint n
-printTerm (Internal qexp) = qexp >>= return . show
+printTerm (Internal qexp) = qexp >>= return . pprint
 printTerm (App a b) =
   liftM2 (\a b -> "(" ++ a ++ " " ++ b ++ ")") (printTerm a) (printTerm b)
 printTerm (Lam n t) =
-  printTerm t >>= return . (("\\" ++ pprint n ++ " -> ") ++)
+  (("\\" ++ pprint n ++ " -> ") ++) <$> printTerm t
 
 
 printContext :: Context -> Q String
 printContext [] = return ""
-printContext ((term, typeDef) : other) = do
-  str <- printTerm term
-  strs <- printContext other
-  return $ str ++ " :: " ++ show typeDef ++ "\n" ++ strs
+printContext ((term, typeDef) : other) =
+  liftM2 (\str strs ->
+            str ++ " :: " ++ show typeDef ++ "\n" ++ strs)
+         (printTerm term)
+         (printContext other)
 
 
 defaultContext :: [(Q Exp, Type)]
