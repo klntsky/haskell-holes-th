@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE CPP #-}
 
 -- | TIP solver for simply typed lambda calculus to automatically infer the code from type definitions using TemplateHaskell.
 module Language.Haskell.Holes
@@ -21,11 +22,36 @@ import Data.List (inits, tails, (++), length, map, take, head, tail,
                   null, concat, repeat, concatMap, zipWith)
 import Data.Either (Either (Left, Right), rights, either)
 import Control.Arrow (second)
-import Control.Monad (liftM2, (>>=), return, fail, mapM)
+import Control.Monad (liftM2, (>>=), (>>), return, fail, mapM)
 import Prelude (Eq, Show,
                 Maybe (Just, Nothing), Bool, Char, String,
                 Double, Float, Int, Integer, Word,
-                show, ($), (.), putStrLn, (==), minBound, not, id, maybe, (<$>))
+                show, ($), (.), putStrLn, (==), minBound, not, id, maybe, fromInteger)
+import Data.Functor ((<$>))
+
+
+#if !MIN_VERSION_base (3,0,0)
+-- | @since 3.0
+instance Functor (Either a) where
+  fmap :: Functor f => (a - b) -> f a -> f b
+  fmap _ (Left x) = Left x
+  fmap f (Right y) = Right (f y)
+
+
+-- | @since 3.0
+instance Applicative (Either e) where
+  pure          = Right
+  Left  e <*> _ = Left e
+  Right f <*> r = fmap f r
+#endif
+
+
+#if !MIN_VERSION_base (4,4,0)
+-- | @since 4.4.0.0
+instance Monad (Either e) where
+  Left  l >>= _ = Left l
+  Right r >>= k = k r
+#endif
 
 
 -- | Data type for type definitions.
