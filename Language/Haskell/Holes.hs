@@ -22,11 +22,16 @@ import Data.List (inits, tails, (++), length, map, take, head, tail,
                   null, concat, repeat, concatMap, zipWith)
 import Data.Either (Either (Left, Right), rights, either)
 import Control.Arrow (second)
-import Control.Monad (liftM2, (>>=), (>>), return, fail, mapM)
+import Control.Monad (liftM2, (>>=), (>>), return, fail)
 import Prelude (Eq, Show,
-                Maybe (Just, Nothing), Bool, Char, String,
-                Double, Float, Int, Integer, Word,
+                Maybe (Just, Nothing),
+                Double, Float, Integer,
                 show, ($), (.), putStrLn, (==), minBound, not, id, maybe, fromInteger)
+import Data.Word (Word)
+import Data.Int (Int)
+import Data.Char (Char)
+import Data.String (String)
+import Data.Bool (Bool)
 import Data.Functor ((<$>))
 
 
@@ -177,10 +182,10 @@ holeWith contextLike qexp = do
 extractTypeDef :: Exp -> Maybe (TypeDef, Name, Type)
 extractTypeDef (SigE (VarE n) tp@(ForallT _ _ t)) =
   (, n, tp) <$> getTypeDef t
-extractTypeDef (SigE (UnboundVarE n) tp@(ForallT _ _ t)) =
-  (, n, tp) <$> getTypeDef t
 extractTypeDef (SigE (VarE n) t) =
   (, n, t) <$> getTypeDef t
+extractTypeDef (SigE (UnboundVarE n) tp@(ForallT _ _ t)) =
+  (, n, tp) <$> getTypeDef t
 extractTypeDef (SigE (UnboundVarE n) t) =
   (, n, t) <$> getTypeDef t
 extractTypeDef _ = Nothing
@@ -202,14 +207,26 @@ toExp :: Term -> Q Exp
 toExp (Var n) = return $ VarE n
 toExp (App a b) =
   liftM2 AppE (toExp a) (toExp b)
-toExp (Lam a b) =
-  LamE [VarP a] <$> toExp b
+toExp l@(Lam _ _) =
+  let (ls, t) = foldLambdas l in
+    LamE ls <$> t
 toExp (Internal qexp) = qexp
+
+
+-- | Fold nested abstractions,
+--
+-- e.g. convert @ \a -> \b -> a b b @ to @ \a b -> a b b @
+foldLambdas :: Term -> ([Pat], Q Exp)
+foldLambdas (Lam a l@(Lam _ _)) =
+  let (ls, t) = foldLambdas l in
+    (VarP a : ls, t)
+foldLambdas (Lam a b) =
+  ([VarP a], toExp b)
 
 
 printTerm :: Term -> Q String
 printTerm (Var n) = return $ pprint n
-printTerm (Internal qexp) = qexp >>= return . pprint
+printTerm (Internal qexp) = pprint <$> qexp
 printTerm (App a b) =
   liftM2 (\a b -> "(" ++ a ++ " " ++ b ++ ")") (printTerm a) (printTerm b)
 printTerm (Lam n t) =
