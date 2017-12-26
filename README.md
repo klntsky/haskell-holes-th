@@ -6,7 +6,7 @@
 
 The following example shows the basic usage of the macro.
 
-```
+```haskell
 {-# LANGUAGE TemplateHaskell #-}
 
 import Language.Haskell.Holes
