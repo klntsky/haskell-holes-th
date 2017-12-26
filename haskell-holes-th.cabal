@@ -18,5 +18,5 @@ library
   exposed-modules:     Language.Haskell.Holes
   other-extensions:    TemplateHaskell, FlexibleInstances, TupleSections,
                        NoImplicitPrelude, NoImplicitPrelude, CPP
-  build-depends:       base >=4.9 && <4.10, template-haskell >=2.11 && <2.12
+  build-depends:       base >=4.9 && <4.11, template-haskell >=2.11 && <2.13
   default-language:    Haskell2010

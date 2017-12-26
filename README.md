@@ -13,19 +13,23 @@ import Language.Haskell.Holes
 
 -- \x -> x
 i :: a -> a
-i = $(hole [| I :: a -> a |])
+i = $(hole [| i :: a -> a |])
 
 -- \x y -> x y y
 w :: (a -> a -> b) -> a -> b
-w = $(hole [| W :: (a -> a -> b) -> a -> b |])
+w = $(hole [| w :: (a -> a -> b) -> a -> b |])
 
 -- \x y z -> x (y z)
 b :: (b -> c) -> (a -> b) -> (a -> c)
-b = $(hole [| B :: (b -> c) -> (a -> b) -> (a -> c) |])
+b = $(hole [| b :: (b -> c) -> (a -> b) -> (a -> c) |])
 
 -- \x y z -> x z y
 c :: (a -> b -> c) -> (b -> a -> c)
-c = $(hole [| C :: (a -> b -> c) -> (b -> a -> c) |])
+c = $(hole [| c :: (a -> b -> c) -> (b -> a -> c) |])
+
+-- \x y z w -> x ((y w) (z w))
+f1 :: (b -> c) -> (d -> a -> b) -> (d -> a) -> (d -> c)
+f1 = $(hole [| f1 :: (b -> c) -> (d -> a -> b) -> (d -> a) -> d -> c |])
 ```
 
 Also check out [Test.hs](Test.hs).
