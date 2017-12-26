@@ -167,7 +167,7 @@ holeWith contextLike qexp = do
                                else "")
              (\r -> do
                  r <- toExp r
-                 runIO . putStrLn $ "haskell-hole-th: '" ++ pprint name ++ "' := "
+                 runIO . putStrLn $ "haskell-holes-th: '" ++ pprint name ++ "' := "
                    ++ pprint r ++ " :: " ++ show typeDef
                  return $ SigE r tp)
              (tip vars context typeDef)
