@@ -64,7 +64,3 @@ Prelude Language.Haskell.TH> runQ [| _ :: Either (Maybe Int) String |] >>= print
 SigE (UnboundVarE _) (AppT (AppT (ConT Data.Either.Either) (AppT (ConT GHC.Base.Maybe) (ConT GHC.Types.Int))) (ConT GHC.Base.String))
 ```
 The part starting after `(UnboundVarE _)` is needed.
-
-## Notes
-
-Type unification is not implemented, but it may be added in the future.

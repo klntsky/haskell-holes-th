@@ -1,38 +1,315 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE CPP #-}
 
--- | TIP solver for simply typed lambda calculus to automatically infer the code from type definitions using TemplateHaskell.
+-- | TIP solver for simply typed lambda calculus to automatically infer code from type definitions.
 module Language.Haskell.Holes
-  (
-    hole
-  , holeWith
-  , defaultContext
+  ( hole
   )
 where
 
+import           Data.Function
+import           Control.Monad.Trans.State
+import           Control.Monad.Trans.Except
+import           Control.Monad.Trans.Class
+import           Control.Arrow
+import           Control.Applicative
+import           Data.Foldable
+import           Language.Haskell.TH
+import           Data.List
+import           Data.Either
+import           Control.Arrow
+import           Control.Monad
+import           Data.Maybe
+import           Data.Monoid
 
-import Language.Haskell.TH (Type (ArrowT, ConT, AppT, VarT, ForallT), Q,
-                            Exp (UnboundVarE, SigE, VarE, LamE, AppE), Name,
-                            Pat(VarP),
-                            pprint, runIO, mkName)
-import Data.List (inits, tails, (++), length, map, take, head, tail,
-                  null, concat, repeat, concatMap, zipWith)
-import Data.Either (Either (Left, Right), rights, either)
-import Control.Arrow (second)
-import Control.Monad (liftM2, (>>=), (>>), return, fail)
-import Prelude (Eq, Show,
-                Maybe (Just, Nothing),
-                Double, Float, Integer,
-                show, ($), (.), putStrLn, (==), minBound, not, id, maybe, fromInteger)
-import Data.Word (Word)
-import Data.Int (Int)
-import Data.Char (Char)
-import Data.String (String)
-import Data.Bool (Bool)
-import Data.Functor ((<$>))
+
+-- | Message type for code inference errors.
+newtype ErrorMsg = ErrorMsg (String, Maybe Context)
+
+instance Semigroup ErrorMsg where
+  a                        <> b@(ErrorMsg (_, Just _)) = b
+  a@(ErrorMsg (_, Just _)) <> b                        = a
+  a                        <> b                        = b
+
+instance Monoid ErrorMsg where
+  mempty = mkError "Unknown" Nothing
+
+
+-- | List of assumptions
+type Context = [(Exp, Type)]
+
+
+-- | Infinite list of unique variable names.
+variables :: Variables
+variables =
+  map mkName $
+  map pure letters ++
+  (zipWith (\c n -> c : show n) (concat $ repeat letters) $
+    concatMap (\n -> take (length letters) $ repeat n) [1..])
+  where letters = "abcdefghijklmnopqrstuvwxyz"
+
+
+type Variables = [Name]
+
+
+mkError :: String -> Maybe Context -> ErrorMsg
+mkError str mctx = ErrorMsg (str, mctx)
+{-# INLINE mkError #-}
+
+
+type Env a = ExceptT ErrorMsg (State Variables) a
+
+
+runEnv :: Env a -> Either ErrorMsg a
+runEnv = flip evalState variables . runExceptT
+{-# INLINE runEnv #-}
+
+
+requestVar :: Env Name
+requestVar = lift $ do
+  (var : rest) <- get
+  put rest
+  pure var
+
+
+putVar :: Name -> Env ()
+putVar var = lift $ modify (var :)
+
+
+extractProduct
+  :: Type
+  -> Env ([Pat], Context)
+extractProduct td@(TupleT n) = pure ([], [])
+extractProduct td@(AppT i o) = do
+  (pat, ctx) <- extractContext o
+  first (++ [pat]) . second (ctx ++) <$> extractProduct i
+extractProduct _ = throwE $ mkError "Not a product type" Nothing
+
+
+extractContext
+  :: Type
+  -> Env (Pat, Context)
+extractContext td =
+  first TupP <$> extractProduct td <|> bindVariable
+  where
+    bindVariable = do
+      var <- requestVar
+      pure (VarP var, [(VarE var, td)])
+
+
+prove
+  :: Context
+  -> Type
+  -> Env Exp
+-- If we are dealing with `acd -> csq`, extract pattern and context from
+-- the antecedent, then prove the consequent within the new context.
+prove ctx (AppT (AppT ArrowT acd) csq) = do
+ (pat, ctx') <- extractContext acd
+ LamE [pat] <$> prove (ctx' ++ ctx) csq
+prove ctx (AppT a b) = do
+  aExpr <- prove ctx a
+  bExpr <- prove ctx b
+  pure (AppE aExpr bExpr)
+prove ctx (TupleT n) =
+  fromMaybe (throwE (mkError "Not a tuple" $ Just ctx)) $
+  pure . ConE <$> nth n tupleConstructors
+prove ctx goal = asum branches
+  where
+    branches :: [Env Exp]
+    branches = map try $ pulls ctx
+
+    try :: ((Exp, Type), Context) -> Env Exp
+    try ((exp, AppT (AppT ArrowT a) b), context') =
+      prove context' a >>= \expA ->
+      prove ((AppE exp expA, b) : context') goal
+    try ((exp, typ), _)
+       | typ == goal = pure exp
+    try ((w, t), ctx') =
+      throwE (mkError "Can't infer type" $ Just ctx)
+
+    -- pulls "abc" == [('a',"bc"),('b',"ac"),('c',"ab")]
+    pulls xs = init $ zipWith pull (inits xs) (tails xs)
+      where
+        pull xs (y:ys) = (y, xs ++ ys)
+
+
+-- | Construct a term by given type specification.
+hole :: Q Exp -> Q Exp
+hole qexp = do
+  let context = []
+  exp <- qexp
+  extractType exp &
+    fmap (\(goal, holeName, inputType) ->
+            either describeError (proceed goal holeName inputType) $
+            runEnv $ prove context goal) &
+    fromMaybe (onFail exp)
+  where
+    proceed :: Type -> Name -> Type -> Exp -> Q Exp
+    proceed goal holeName inputType term = do
+      let normalized = normalize term
+      runIO . putStrLn $ "hole: '" ++ pprint holeName ++ "' := "
+                       ++ pprint normalized ++ " :: " ++ pprint goal
+      pure $ SigE normalized inputType
+
+    describeError :: ErrorMsg -> Q Exp
+    describeError (ErrorMsg (msg, mcontext)) = do
+      context <- printContext $ fromMaybe [] mcontext
+      fail $ msg ++ if not (null context)
+                    then
+                      "\nin the context:\n" ++ context
+                    else
+                      " (no context available)"
+
+    onFail :: Exp -> Q Exp
+    onFail exp = fail $ "Can't parse type definition in " ++ show exp
+              ++ "\nHoles must be in form of '$(hole [| _ :: <place type "
+              ++ "definition here> |])'"
+
+
+-- | Extract type defintion - both as a 'Type' and as a 'Type' with `forall`
+-- quantifiers. Also return the name of a hole.
+extractType :: Exp -> Maybe (Type, Name, Type)
+extractType (SigE (VarE n) tp@(ForallT _ _ t)) =
+  pure (t, n, tp)
+extractType (SigE (VarE n) t) =
+  pure (t, n, t)
+extractType (SigE (UnboundVarE n) tp@(ForallT _ _ t)) =
+  pure (t, n, tp)
+extractType (SigE (UnboundVarE n) t) =
+  pure (t, n, t)
+extractType _ = Nothing
+
+
+-- | Fold nested lambda-abstractions,
+--
+-- e.g. convert @ \a -> \b -> a b b @ to @ \a b -> a b b @
+foldLambdas :: Exp -> Maybe ([Pat], Exp)
+foldLambdas (LamE pat l@(LamE _ _)) = do
+  (ls, t) <- foldLambdas l
+  pure (pat ++ ls, t)
+foldLambdas (LamE pat b) =
+  pure (pat, b)
+foldLambdas _ = Nothing
+
+
+-- | Pull out tuple constructors.
+--
+-- e.g. convert @(,,) a b c@ to @(a, b, c)@
+normalizeProduct
+  :: Exp
+  -> Maybe Exp
+normalizeProduct exp = case go 0 exp of
+  Nothing -> Nothing
+  Just exps -> Just $ TupE $ reverse exps
+  where
+    go :: Int -> Exp -> Maybe [Exp]
+    go n (AppE (ConE tc) a) =
+      if elemIndex tc tupleConstructors == Just (n + 1)
+      then pure [a]
+      else Nothing
+    go n (AppE a b) = do
+      exps <- go (n+1) a
+      pure (b : exps)
+    go _ _ = Nothing
+
+
+-- | Apply 'normalizeProduct' and 'foldLambdas'.
+normalize :: Exp -> Exp
+normalize exp =
+  case foldLambdas exp of
+    Just (pats, exp') -> LamE pats $ normalize exp'
+    Nothing -> case normalizeProduct exp of
+      Nothing -> stepDown exp
+      Just exp' -> normalize exp'
+  where
+    -- This function does NOT traverse the entire expression.
+    -- TODO: add missing patterns.
+    stepDown (AppE a b) = AppE (normalize a) (normalize b)
+    stepDown (LamE pats b) = LamE pats (normalize b)
+    stepDown (TupE exps) = TupE (map normalize exps)
+    stepDown exp = exp
+
+
+--  unlines $ map (\n -> "  , '("++ replicate (n - 1) ',' ++ ")")  [1..62]
+tupleConstructors =
+  [ '()
+  , '(,)
+  , '(,,)
+  , '(,,,)
+  , '(,,,,)
+  , '(,,,,,)
+  , '(,,,,,,)
+  , '(,,,,,,,)
+  , '(,,,,,,,,)
+  , '(,,,,,,,,,)
+  , '(,,,,,,,,,,)
+  , '(,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  , '(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,)
+  ]
+
+
+printContext :: Context -> Q String
+printContext [] = pure ""
+printContext ((term, typeDef) : rest) =
+  ((pprint term ++ " :: " ++ pprint typeDef ++ "\n") ++) <$>
+  printContext rest
+
+
+nth :: Int -> [a] -> Maybe a
+nth _ []       = Nothing
+nth 0 (x : _)  = Just x
+nth n (_ : xs) = nth (n - 1) xs
 
 
 #if !MIN_VERSION_base (3,0,0)
@@ -57,200 +334,3 @@ instance Monad (Either e) where
   Left  l >>= _ = Left l
   Right r >>= k = k r
 #endif
-
-
--- | Data type for type definitions.
-data TypeDef =
-  Atom Type
-  | Imp TypeDef TypeDef
-  deriving (Eq)
-
-
-instance Show TypeDef where
-  show (Atom name) = pprint name
-  show (Imp a@(Imp _ _) b) = "(" ++ show a ++ ") -> " ++ show b
-  show (Imp a b) = show a ++ " -> " ++ show b
-
-
--- | Data type for lambda-terms.
-data Term =
-  Var Name
-  | Internal (Q Exp)
-  | App Term Term
-  | Lam Name Term
-
-
--- | Message type for code inference errors.
-type ErrorMsg = (String, Maybe Context)
-
-
--- | List of assumptions
-type Context = [(Term, TypeDef)]
-
-
--- | Used to allow user-defined contexts without exporting 'Term' and 'TypeDef'
--- constructors.
-class ContextLike a where
-  toContext :: a -> Context
-
-
-instance ContextLike Context where
-  toContext = id
-
-
--- | The user only needs 'Internal' and 'Atom'.
-instance ContextLike [(Q Exp, Type)] where
-  toContext = map (\(term, tp) -> (Internal term, Atom tp))
-
-
--- | Infinite list of unique variable names
-vars :: [Name]
-vars =
-  map mkName $
-  map return letters ++
-  (zipWith (\c n -> c : show n) (concat $ repeat letters) $
-    concatMap (\n -> take (length letters) $ repeat n) [1..])
-  where letters = "abcdefghijklmnopqrstuvwxyz"
-
-
--- | Solve the type inhabitation problem for given type.
-tip ::
-  [Name] -- ^ List of new variables
-  -> Context -- ^ Assumptions
-  -> TypeDef -- ^ Goal
-  -> Either ErrorMsg Term
-tip vars context (Imp a b) =
-  -- Create a new name for the variable bound by this lambda and
-  -- update the context appropriately.
-  let name = head vars in
-    tip (tail vars) ((Var name, a) : context) b >>= Right . Lam name
-tip vars context goal =
-  -- Prove the goal by trying to reach it through the assumptions
-  if null branches
-  then Left ("Can't prove " ++ show goal, Just context)
-  else Right $ head branches
-  where
-    branches :: [Term]
-    branches = rights . map try $ pulls context
-
-    try :: ((Term, TypeDef), Context) -> Either ErrorMsg Term
-    try ((exp, Atom v), newCtx)
-      | Atom v == goal = Right exp
-    try ((exp, Imp a b), context') =
-      tip vars context' a >>= \expA ->
-      tip vars ((App exp expA, b) : context') goal
-    try _ = Left ("", Nothing)
-
-    -- pulls "abc" == [('a',"bc"),('b',"ac"),('c',"ab")]
-    pulls :: [a] -> [(a, [a])]
-    pulls xs = take (length xs) $ zipWith (second . (++)) (inits xs) breakdown
-      where pull (x : xs) = (x, xs)
-            breakdown = map pull (tails xs)
-
-
--- | Construct a term by given specification.
-hole :: Q Exp -> Q Exp
-hole = holeWith defaultContext
-
-
--- | Construct a term by given specification and additional context
-holeWith :: ContextLike c => c -> Q Exp -> Q Exp
-holeWith contextLike qexp = do
-  let context = toContext contextLike
-  exp <- qexp
-  case extractTypeDef exp of
-    Just (typeDef, name, tp) ->
-      either (\(msg, mcontext) -> do
-                 context <- printContext $ maybe [] id mcontext
-                 fail $ msg ++ if not (null context) then
-                                 "\nin the context:\n" ++ context
-                               else "")
-             (\r -> do
-                 r <- toExp r
-                 runIO . putStrLn $ "haskell-holes-th: '" ++ pprint name ++ "' := "
-                   ++ pprint r ++ " :: " ++ show typeDef
-                 return $ SigE r tp)
-             (tip vars context typeDef)
-
-    Nothing -> fail $ "Can't parse type definition in " ++ show exp
-              ++ "\nHoles must be in form of '$(hole [| _ :: <place type "
-              ++ "definition here> |])'"
-
-
--- | Extract type defintion - both as a 'TypeDef' and as a 'Type' with `forall`
--- quantifiers. Also return the name of a hole.
-extractTypeDef :: Exp -> Maybe (TypeDef, Name, Type)
-extractTypeDef (SigE (VarE n) tp@(ForallT _ _ t)) =
-  (, n, tp) <$> getTypeDef t
-extractTypeDef (SigE (VarE n) t) =
-  (, n, t) <$> getTypeDef t
-extractTypeDef (SigE (UnboundVarE n) tp@(ForallT _ _ t)) =
-  (, n, tp) <$> getTypeDef t
-extractTypeDef (SigE (UnboundVarE n) t) =
-  (, n, t) <$> getTypeDef t
-extractTypeDef _ = Nothing
-
-
--- | Disentangle the type definition.
-getTypeDef :: Type -> Maybe TypeDef
-getTypeDef a@(VarT _) = Just $ Atom a
-getTypeDef a@(ConT _) = Just $ Atom a
-getTypeDef (AppT (AppT ArrowT a) b) =
-  liftM2 Imp (getTypeDef a) (getTypeDef b)
-getTypeDef a@(AppT _ _) =
-  Just $ Atom a
-getTypeDef _ = Nothing
-
-
--- | Convert 'Term' to the code.
-toExp :: Term -> Q Exp
-toExp (Var n) = return $ VarE n
-toExp (App a b) =
-  liftM2 AppE (toExp a) (toExp b)
-toExp l@(Lam _ _) =
-  let (ls, t) = foldLambdas l in
-    LamE ls <$> t
-toExp (Internal qexp) = qexp
-
-
--- | Fold nested abstractions,
---
--- e.g. convert @ \a -> \b -> a b b @ to @ \a b -> a b b @
-foldLambdas :: Term -> ([Pat], Q Exp)
-foldLambdas (Lam a l@(Lam _ _)) =
-  let (ls, t) = foldLambdas l in
-    (VarP a : ls, t)
-foldLambdas (Lam a b) =
-  ([VarP a], toExp b)
-
-
-printTerm :: Term -> Q String
-printTerm (Var n) = return $ pprint n
-printTerm (Internal qexp) = pprint <$> qexp
-printTerm (App a b) =
-  liftM2 (\a b -> "(" ++ a ++ " " ++ b ++ ")") (printTerm a) (printTerm b)
-printTerm (Lam n t) =
-  (("\\" ++ pprint n ++ " -> ") ++) <$> printTerm t
-
-
-printContext :: Context -> Q String
-printContext [] = return ""
-printContext ((term, typeDef) : other) =
-  liftM2 (\str strs ->
-            str ++ " :: " ++ show typeDef ++ "\n" ++ strs)
-         (printTerm term)
-         (printContext other)
-
-
-defaultContext :: [(Q Exp, Type)]
-defaultContext =
-  [
-    ([| minBound |], ConT ''Bool),
-    ([| minBound |], ConT ''Char),
-    ([| minBound |], ConT ''Double),
-    ([| minBound |], ConT ''Float),
-    ([| minBound |], ConT ''Int),
-    ([| minBound |], ConT ''Integer),
-    ([| minBound |], ConT ''Word),
-    ([| "" |], ConT ''String)
-  ]

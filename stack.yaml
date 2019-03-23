@@ -1,0 +1,10 @@
+resolver: lts-12.14
+packages:
+- .
+extra-deps:
+  - posix-escape-0.1
+  - QuickCheck-2.11.3
+
+nix:
+  enable: true
+  packages:
