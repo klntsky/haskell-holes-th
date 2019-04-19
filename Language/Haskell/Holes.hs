@@ -17,7 +17,6 @@ import           Data.Foldable
 import           Language.Haskell.TH
 import           Data.List
 import           Data.Maybe
-import           Control.Monad
 
 
 -- | Message type for code inference errors.
@@ -93,9 +92,34 @@ prove
   -> Env Exp
 -- If we are dealing with `acd -> csq`, extract pattern and context from
 -- the antecedent, then prove the consequent within the new context.
-prove ctx (AppT (AppT ArrowT acd) csq) = do
- (pat, ctx') <- extractContext acd
- LamE [pat] <$> prove (ctx' ++ ctx) csq
+prove ctx (AppT (AppT ArrowT acd) csq) =
+  case acd of
+    -- acd@(Either a b) -> csq
+    (AppT (AppT (ConT c) a) b)
+      | c == ''Either -> do
+          -- Request a new variable for '\var -> case var of ...' expression
+          lamVar <- requestVar
+          -- Request two variables for both proof branches
+          aVar <- requestVar
+          aExpr <- prove ctx (AppT (AppT ArrowT a) csq)
+          bVar <- requestVar
+          bExpr <- prove ctx (AppT (AppT ArrowT b) csq)
+          pure $
+            LamE ([VarP lamVar]) $
+            -- TODO: perform eta reduction where possible
+            CaseE (VarE lamVar) [ Match (ConP 'Left  [VarP aVar]) (NormalB (AppE aExpr (VarE aVar))) []
+                                , Match (ConP 'Right [VarP bVar]) (NormalB (AppE bExpr (VarE bVar))) []
+                                ]
+    -- acd -> csq
+    _ -> do
+      (pat, ctx') <- extractContext acd
+      LamE [pat] <$> prove (ctx' ++ ctx) csq
+prove ctx (AppT (AppT c a) b)
+  | c == ConT ''Either =
+    (prove ctx a <&> proceedWith 'Left) <|>
+    (prove ctx b <&> proceedWith 'Right)
+    where
+      proceedWith con expr = AppE (ConE con) expr
 prove ctx (AppT a b) = do
   aExpr <- prove ctx a
   bExpr <- prove ctx b
@@ -115,7 +139,7 @@ prove ctx goal = asum branches
     try ((expr, typ), _)
        | typ == goal = pure expr
     try _ =
-      throwE (mkError "Can't infer type" $ Just ctx)
+      throwE (mkError "Can't infer type " $ Just ctx)
 
     -- pulls "abc" == [('a',"bc"),('b',"ac"),('c',"ab")]
     pulls xs = init $ zipWith pull (inits xs) (tails xs)
@@ -291,8 +315,7 @@ tupleConstructors =
 printContext :: Context -> Q String
 printContext [] = pure ""
 printContext ((term, typeDef) : rest) =
-  ((pprint term ++ " :: " ++ pprint typeDef ++ "\n") ++) <$>
-  printContext rest
+  ((pprint term ++ " :: " ++ pprint typeDef ++ "\n") ++) <$> printContext rest
 
 
 nth :: Int -> [a] -> Maybe a
@@ -323,3 +346,8 @@ instance Monad (Either e) where
   Left  l >>= _ = Left l
   Right r >>= k = k r
 #endif
+
+(<&>) :: Functor f => f a -> (a -> b) -> f b
+(<&>) = flip fmap
+
+infixl 4 <&>

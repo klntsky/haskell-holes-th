@@ -76,3 +76,15 @@ rebalance = $(hole [| rebalance :: (a, (b, c)) -> (a, (b, c)) |])
 
 unit :: ()
 unit = $(hole [| unit :: () |])
+
+either1 :: a -> Either a b
+either1 = $(hole [| either1 :: a -> Either a b |])
+
+either2 :: b -> Either a b
+either2 = $(hole [| either2 :: b -> Either a b |])
+
+either3 :: Either a b -> Either b a
+either3 = $(hole [| either3 :: Either a b -> Either b a |])
+
+either4 :: Either a (Either b c) -> Either (Either c b) a
+either4 = $(hole [| either4 :: Either a (Either b c) -> Either (Either c b) a |])
