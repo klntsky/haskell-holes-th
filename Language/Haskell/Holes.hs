@@ -1,6 +1,4 @@
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE CPP #-}
 
 -- | TIP solver for simply typed lambda calculus to automatically infer code from type definitions.
@@ -18,20 +16,17 @@ import           Control.Applicative
 import           Data.Foldable
 import           Language.Haskell.TH
 import           Data.List
-import           Data.Either
-import           Control.Arrow
-import           Control.Monad
 import           Data.Maybe
-import           Data.Monoid
+import           Control.Monad
 
 
 -- | Message type for code inference errors.
 newtype ErrorMsg = ErrorMsg (String, Maybe Context)
 
 instance Semigroup ErrorMsg where
-  a                        <> b@(ErrorMsg (_, Just _)) = b
-  a@(ErrorMsg (_, Just _)) <> b                        = a
-  a                        <> b                        = b
+  _                        <> b@(ErrorMsg (_, Just _)) = b
+  a@(ErrorMsg (_, Just _)) <> _                        = a
+  _                        <> b                        = b
 
 instance Monoid ErrorMsg where
   mempty = mkError "Unknown" Nothing
@@ -46,7 +41,7 @@ variables :: Variables
 variables =
   map mkName $
   map pure letters ++
-  (zipWith (\c n -> c : show n) (concat $ repeat letters) $
+  (zipWith (\c n -> c : show (n :: Integer)) (concat $ repeat letters) $
     concatMap (\n -> take (length letters) $ repeat n) [1..])
   where letters = "abcdefghijklmnopqrstuvwxyz"
 
@@ -68,21 +63,14 @@ runEnv = flip evalState variables . runExceptT
 
 
 requestVar :: Env Name
-requestVar = lift $ do
-  (var : rest) <- get
-  put rest
-  pure var
-
-
-putVar :: Name -> Env ()
-putVar var = lift $ modify (var :)
+requestVar = lift $ get >>= \(var : rest) -> put rest >> pure var
 
 
 extractProduct
   :: Type
   -> Env ([Pat], Context)
-extractProduct td@(TupleT n) = pure ([], [])
-extractProduct td@(AppT i o) = do
+extractProduct (TupleT _) = pure ([], [])
+extractProduct (AppT i o) = do
   (pat, ctx) <- extractContext o
   first (++ [pat]) . second (ctx ++) <$> extractProduct i
 extractProduct _ = throwE $ mkError "Not a product type" Nothing
@@ -121,30 +109,30 @@ prove ctx goal = asum branches
     branches = map try $ pulls ctx
 
     try :: ((Exp, Type), Context) -> Env Exp
-    try ((exp, AppT (AppT ArrowT a) b), context') =
-      prove context' a >>= \expA ->
-      prove ((AppE exp expA, b) : context') goal
-    try ((exp, typ), _)
-       | typ == goal = pure exp
-    try ((w, t), ctx') =
+    try ((expr, AppT (AppT ArrowT a) b), context') =
+      prove context' a >>= \exprA ->
+      prove ((AppE expr exprA, b) : context') goal
+    try ((expr, typ), _)
+       | typ == goal = pure expr
+    try _ =
       throwE (mkError "Can't infer type" $ Just ctx)
 
     -- pulls "abc" == [('a',"bc"),('b',"ac"),('c',"ab")]
     pulls xs = init $ zipWith pull (inits xs) (tails xs)
-      where
-        pull xs (y:ys) = (y, xs ++ ys)
 
+    pull xs (y:ys) = (y, xs ++ ys)
+    pull _ _ = error "Impossible happened"
 
 -- | Construct a term by given type specification.
 hole :: Q Exp -> Q Exp
-hole qexp = do
+hole qexpr = do
   let context = []
-  exp <- qexp
-  extractType exp &
+  expr <- qexpr
+  extractType expr &
     fmap (\(goal, holeName, inputType) ->
             either describeError (proceed goal holeName inputType) $
             runEnv $ prove context goal) &
-    fromMaybe (onFail exp)
+    fromMaybe (onFail expr)
   where
     proceed :: Type -> Name -> Type -> Exp -> Q Exp
     proceed goal holeName inputType term = do
@@ -163,7 +151,7 @@ hole qexp = do
                       " (no context available)"
 
     onFail :: Exp -> Q Exp
-    onFail exp = fail $ "Can't parse type definition in " ++ show exp
+    onFail expr = fail $ "Can't parse type definition in " ++ show expr
               ++ "\nHoles must be in form of '$(hole [| _ :: <place type "
               ++ "definition here> |])'"
 
@@ -200,9 +188,9 @@ foldLambdas _ = Nothing
 normalizeProduct
   :: Exp
   -> Maybe Exp
-normalizeProduct exp = case go 0 exp of
+normalizeProduct expr = case go 0 expr of
   Nothing -> Nothing
-  Just exps -> Just $ TupE $ reverse exps
+  Just exprs -> Just $ TupE $ reverse exprs
   where
     go :: Int -> Exp -> Maybe [Exp]
     go n (AppE (ConE tc) a) =
@@ -210,29 +198,30 @@ normalizeProduct exp = case go 0 exp of
       then pure [a]
       else Nothing
     go n (AppE a b) = do
-      exps <- go (n+1) a
-      pure (b : exps)
+      exprs <- go (n+1) a
+      pure (b : exprs)
     go _ _ = Nothing
 
 
 -- | Apply 'normalizeProduct' and 'foldLambdas'.
 normalize :: Exp -> Exp
-normalize exp =
-  case foldLambdas exp of
-    Just (pats, exp') -> LamE pats $ normalize exp'
-    Nothing -> case normalizeProduct exp of
-      Nothing -> stepDown exp
-      Just exp' -> normalize exp'
+normalize expr =
+  case foldLambdas expr of
+    Just (pats, expr') -> LamE pats $ normalize expr'
+    Nothing -> case normalizeProduct expr of
+      Nothing -> stepDown expr
+      Just expr' -> normalize expr'
   where
     -- This function does NOT traverse the entire expression.
     -- TODO: add missing patterns.
     stepDown (AppE a b) = AppE (normalize a) (normalize b)
     stepDown (LamE pats b) = LamE pats (normalize b)
     stepDown (TupE exps) = TupE (map normalize exps)
-    stepDown exp = exp
+    stepDown other = other
 
 
 --  unlines $ map (\n -> "  , '("++ replicate (n - 1) ',' ++ ")")  [1..62]
+tupleConstructors :: [Name]
 tupleConstructors =
   [ '()
   , '(,)
