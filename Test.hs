@@ -42,6 +42,13 @@ first = $(hole [| first :: (a -> b) -> (a, c) -> (b, c) |])
 second :: (b -> c) -> (a, b) -> (a, c)
 second = $(hole [| second :: (b -> c) -> (a, b) -> (a, c) |])
 
+-- Proving that (->) is an instance of Choice
+left :: (a -> b) -> Either a c -> Either b c
+left = $(hole [| left :: (a -> b) -> Either a c -> Either b c |])
+
+right :: (a -> b) -> Either c a -> Either c b
+right = $(hole [| right :: (a -> b) -> Either c a -> Either c b |])
+
 -- Simple tests
 
 prod1 :: a -> (a, a)
@@ -88,3 +95,7 @@ either3 = $(hole [| either3 :: Either a b -> Either b a |])
 
 either4 :: Either a (Either b c) -> Either (Either c b) a
 either4 = $(hole [| either4 :: Either a (Either b c) -> Either (Either c b) a |])
+
+-- Leaving it empty: if it compiles, everything's OK.
+main :: IO ()
+main = return ()
