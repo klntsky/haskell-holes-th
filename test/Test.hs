@@ -1,7 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -Wno-unused-top-binds -Wno-name-shadowing -Wno-unused-matches #-}
 
 import Language.Haskell.Holes
-import Language.Haskell.TH
 
 -- \x -> x
 i :: a -> a
